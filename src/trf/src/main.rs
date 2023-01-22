@@ -8,10 +8,12 @@ use clap::Parser;
 use log::{info, warn};
 use tokio::{signal, task};
 use trf_common::EventLog;
-use logger_info::{get_default_header_offset};
+use logger_info::{__config_logger_yml};
 use std::net::Ipv4Addr;
 use bytes::BytesMut;
+use rsyslogger::{remote_log, local_info_log};
 
+// Interface where services are exposed (docker {springboot} {LDAP} - docker0)
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long, default_value = "docker0")] // wlp2s0
@@ -20,14 +22,14 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    __config_logger_yml("draft-rule-set-default.yml");
     let opt = Opt::parse();
     
+    // debug
+    //remote_log();
+    //local_info_log("elogj-sample-info-test");
+
     env_logger::init();
-    
-    // TODO
-    //let (nameoff, payloadoff) = get_default_header_offset();
-    //let headername_size: u32 = (payloadoff - nameoff - 2) as u32;
-    // ----
     
     let mut bpf = Bpf::load(include_bytes_aligned!(
             "../../target/bpfel-unknown-none/debug/trf"
@@ -71,7 +73,7 @@ async fn main() -> Result<(), anyhow::Error> {
     program.attach()?;
     // ----
 
-    // Events
+    // Events - TODO: mid-level parsing; send event as json
     let mut perf_array = AsyncPerfEventArray::try_from(bpf.map_mut("EVENTS")?)?;
     for cpu_id in online_cpus()? {
         let mut buf = perf_array.open(cpu_id, None)?;
@@ -89,12 +91,12 @@ async fn main() -> Result<(), anyhow::Error> {
                     let ptr = buf.as_ptr() as *const EventLog;
                     let data = unsafe { ptr.read_unaligned() }; // read_unaligned --> reads data to EventLog
 
-                    let saddr = Ipv4Addr::from(data.saddr);
-                    let daddr = Ipv4Addr::from(data.daddr);
+                    let saddr = Ipv4Addr::from(data.eroute[0]);
+                    let daddr = Ipv4Addr::from(data.eroute[1]);
                     
                     match data.etype {
-                        0 => info!("ig: {} --> {} elvls: {:?} drop: {} override: {}", saddr, daddr, data.elvls, data.edrop, data.eovrd),
-                        1 => info!("eg: {} --> {} elvls: {:?} drop: {} override: {}", saddr, daddr, data.elvls, data.edrop, data.eovrd),
+                        0 => info!("ig: {} --> {} elvls: {:?} action: {:?}", saddr, daddr, data.elvls, data.eaction),
+                        1 => info!("eg: {} --> {} elvls: {:?} action: {:?}", saddr, daddr, data.elvls, data.eaction),
                         _ => {},
                     }
                 }
