@@ -23,6 +23,9 @@ use unroll::unroll_for_loops;
 mod bindings;
 use bindings::{ethhdr, iphdr, tcphdr, bpf_attr, bpf_attr__bindgen_ty_13, bpf_cmd};
 
+mod ldap_bindings;
+use ldap_bindings::{LdapBindgs};
+
 /** Logger Offset:
  * Since our Log4j logger example receives input from some
  * HTTP header field (or any other protocol for that matter),
@@ -49,7 +52,7 @@ const HEADER_SEQ: [u8; LOGGER_INFO[0]] = core::include!("../../trf-common/header
 const RULE_SET: [u32; 4usize] = core::include!("../../trf-common/rule-set.dat");
 /*
     0: Block TCP (1) / Block HTTP (2)                           ----> NOTE: OUTBOUND TRAFFIC ONLY
-    1: Block LDAP ports                                        --/   (Future work: custom ports)
+    1: Block LDAP ports                                        --/   (Future work: custom ports / differentiate outbound/inbound traffic)
     2: Block JNDI lookup (1) / Block JNDI request (2)
     3: Block JNDI:LDAP lookup (1) / Block JNDI:LDAP request (2)
 
@@ -209,7 +212,7 @@ fn try_intrf(ctx: XdpContext) -> Result<u32, ()> {
     if h_proto != ETH_P_IP {
         return Ok(xdp_action::XDP_PASS)
     }
-
+    let mut srcldap: u8 = 0;
     let mut eroute = [0u32 ; 2usize];
     let mut eaction = [0u32 ; 2usize];
     let mut elvls = [0u32 ; 3usize];
@@ -271,8 +274,8 @@ fn try_intrf(ctx: XdpContext) -> Result<u32, ()> {
                 }
             }
         }
-        elvls[0] = 1  // TCP Data
-    } else if ip_proto == IPPROTO_TCP && LDAP_PORTS.iter().any(|p| p == &saddr_port) { // LDAP Data
+        elvls[0] = 1;  // TCP Data
+    } else if ip_proto == IPPROTO_TCP && LDAP_PORTS.iter().any(|p| p == &saddr_port) {
         /*
             Every LDAP packet data starts with the character '0' (byte - 48, ref: ascii table).
             Assuming that LDAP is running on a native port, using both conditions, shallow/medium
@@ -293,26 +296,30 @@ fn try_intrf(ctx: XdpContext) -> Result<u32, ()> {
             from testing, it was observable that LDAP searchResEntry packets (with size = 275 bytes)
             had a +1 offset.    (**1)
         */
-        let pool: [u8; 6] = [96, 97, 66, 99, 100, 101];
+        let data_size = ((ctx.data_end() - ctx.data()) - (TCP_DATA)) as usize;
+        let bindgs: LdapBindgs = LdapBindgs::new();
+        let _pool: [u8; 3] = bindgs.get_protocol_op_pool();
         let fbyte: u8 = unsafe { *ptr_at(&ctx, TCP_DATA)? };
-        if fbyte == 48 {
+        if fbyte == 48 { // LDAP Data
             let mut msgID: u8 = unsafe { *ptr_at(&ctx, TCP_DATA + 4)? };
             let mut protocolOp: u8 = unsafe { *ptr_at(&ctx, TCP_DATA + 5)? };
 
             // test: openldap/*.sh  ;  (**1)
-            if pool.iter().all(|op| op != &protocolOp) {
+            if data_size >= 100 && !bindgs.check_protocol_op_type(protocolOp) {
                 msgID = unsafe { *ptr_at(&ctx, TCP_DATA + 5)? };
                 protocolOp = unsafe { *ptr_at(&ctx, TCP_DATA + 6)? };
             }
-            // TODO: create field bindings for protocol operations (like bindings.rs).
-            info!(&ctx, "\tLDAP packet: messageID = {} ; protocolOp = {}", fbyte, msgID, protocolOp);
+            // info!(&ctx, "\tLDAP packet: messageID = {} ; protocolOp = {}", msgID, protocolOp);
+            elvls[1] = data_size as u32; // ldap data packet size
+            elvls[2] = protocolOp as u32; // protocol Operation (ldap)
         }
 
-        //info!(&ctx, "\tSent packet from port in LDAP ; fbyte = {}", fbyte);
+        elvls[0] = 1;  // TCP Data
+        srcldap = 1;   // Src LDAP
     }
 
     // RULE SET (idx=1): if 1 --> block LDAP ports
-    if RULE_SET[1] == 1 && LDAP_PORTS.map(|p| p == daddr_port).len() > 0 {
+    if RULE_SET[1] == 1 && ( LDAP_PORTS.map(|p| p == daddr_port).len() > 0 || srcldap == 1 ) {
         ctxdrop = 1;
     }
 
@@ -483,7 +490,12 @@ fn try_egtrf(ctx: TcContext) -> Result<i32, i64> {
 
     if einfo != (0, 0) {
         elvls[0] = einfo.0;     // Regex match for `${`
-        elvls[1] = einfo.1;     // Found JNDI / JNDI:LDAP lookup (1/2)
+        if einfo.1 == 1 {       // Found JNDI / JNDI:LDAP lookup (1/2)
+            elvls[1] = 1;
+        } else if einfo.1 == 2 {
+            elvls[1] = 1;
+            elvls[2] = 1;
+        }
 
         if elvls[1] >= 1 {      // Blocking request/lookup JNDI will also block JDNI:LDAP 
             if RULE_SET[2] == 1 || RULE_SET[3] == 1 {

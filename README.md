@@ -13,12 +13,23 @@ extended Log4j observability tool used to detect and prevent malicious JNDI (/LD
   . added experimental LSM module (bpf syscall -- blackbox eLogJ)
   .
 0.1.5: Rulesets configured using yaml file.
+0.1.6: "file"/"local" log_type (yaml)
+0.1.7: Added whitelist to yaml & LDAP Response tracing
+0.1.8: Remote Agent-less logging (Wazuh Manager)
 </pre>
 
 ### Dependencies
-rust stable or nightly toolchain: `rustup install stable` / `rustup install nightly`
+Rust stable and nightly toolchain: 
 <br>
-bpf-linker: `cargo install bpf-linker`
+`rustup install stable`
+<br>
+`rustup toolchain install nightly --component rust-src`
+<br>
+bpf-linker:
+<br>
+`cargo install bpf-linker`
+<br>
+Ref: https://aya-rs.dev/book/start/development/#how-to-use-this-guide
 
 ### Build Userspace:
 > cargo build
